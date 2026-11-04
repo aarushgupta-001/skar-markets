@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115"><title>Market</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>if(!window.L){document.write('<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>')}</script>
+<style>
+html,body,#map{margin:0;height:100%;width:100%}
+body{background:#0f1115;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+#box{position:fixed;top:calc(10px + env(safe-area-inset-top));right:10px;left:10px;margin-left:auto;z-index:1000;max-width:420px;background:#fff;color:#111;
+  border-radius:16px;padding:14px 16px;text-align:right;font-weight:800;font-size:26px;line-height:1.15;border-left:14px solid #9ca3af;
+  box-shadow:0 6px 22px rgba(0,0,0,.5);word-break:break-word}
+#box small{display:block;font-size:13px;font-weight:600;color:#4b5563;margin-top:6px}
+#btns{position:fixed;left:10px;right:10px;bottom:calc(18px + env(safe-area-inset-bottom));z-index:1000;display:flex;gap:10px}
+#btns button{flex:1;text-align:center;background:#fff;color:#111;border:0;border-radius:14px;padding:14px 10px;font-size:16px;font-weight:800;
+  box-shadow:0 4px 14px rgba(0,0,0,.4)}
+#btns #me{background:#0f1115;color:#fff;border:1px solid #374151}
+.lbl{background:rgba(15,17,21,.85);color:#fff;border:0;border-radius:6px;font-size:11px;font-weight:700;padding:2px 6px;box-shadow:none}
+.lbl:before{display:none}
+</style></head><body>
+<div id="map"></div>
+<div id="box">Loading…</div>
+<div id="btns"><button id="me">Centre on me</button><button id="mk">Centre on market</button></div>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var q = new URLSearchParams(location.search), MID = q.get('m'), WDC = q.get('wd');
+  var COL = {Blue: '#2563eb', Yellow: '#eab308', Red: '#dc2626'};
+  var map = L.map('map', {zoomControl: false}).setView([15, 76], 7);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, attribution: 'Tiles &copy; Esri'}).addTo(map);
+  var Lme = L.layerGroup().addTo(map), M = null, pos = null, PB = null;
+  // debug: open the link with &debug=1 to see what the page is doing
+  var DBG = q.get('debug') === '1';
+  function log(t) { if (window.console) console.log('[market] ' + t); if (DBG) { var e = document.getElementById('dbg'); if (!e) { e = document.createElement('pre'); e.id = 'dbg';
+    e.style.cssText = 'position:fixed;left:8px;top:120px;z-index:1001;max-width:70%;max-height:40%;overflow:auto;background:rgba(0,0,0,.8);color:#a7f3d0;font-size:11px;padding:6px;border-radius:8px;margin:0';
+    document.body.appendChild(e); } e.textContent += t + '\n'; } }
+  log('m=' + MID + ' wd=' + WDC + ' protocol=' + location.protocol);
+  function box(t, s, col) { $('box').innerHTML = t + (s ? '<small>' + s + '</small>' : ''); $('box').style.borderLeftColor = col || '#9ca3af'; }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]; }); }
+  function inRing(x, y, r) { var c = false; for (var i = 0, j = r.length - 1; i < r.length; j = i++) { var xi = r[i][0], yi = r[i][1], xj = r[j][0], yj = r[j][1];
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) c = !c; } return c; }
+  function polys(g) { return !g ? [] : g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates :
+    g.type === 'GeometryCollection' ? [].concat.apply([], g.geometries.map(polys)) : g.type === 'Feature' ? polys(g.geometry) : []; }
+  function inside(x, y, g) { return polys(g).some(function (p) { if (!inRing(x, y, p[0])) return false; for (var k = 1; k < p.length; k++) if (inRing(x, y, p[k])) return false; return true; }); }
+  function km(a, b, c, d) { var R = 6371, r = Math.PI / 180, dl = (c - a) * r, dn = (d - b) * r;
+    var h = Math.sin(dl / 2) * Math.sin(dl / 2) + Math.cos(a * r) * Math.cos(c * r) * Math.sin(dn / 2) * Math.sin(dn / 2); return 2 * R * Math.asin(Math.sqrt(h)); }
+  function edgeKm(la, lo, g) { var best = 1e9; polys(g).forEach(function (p) { p.forEach(function (ring) { ring.forEach(function (v) { best = Math.min(best, km(la, lo, v[1], v[0])); }); }); }); return best; }
+  function update() {
+    if (!M) return;
+    if (!pos) { box(esc(M.n), 'Turn on location to see if you are inside', COL[M.c]); return; }
+    if (inside(pos[1], pos[0], M.g)) box('You are inside ' + esc(M.n), M.c + ' market · GPS ±' + Math.round(pos[2]) + ' m', '#16a34a');
+    else box('You are not inside ' + esc(M.n), '≈ ' + edgeKm(pos[0], pos[1], M.g).toFixed(1) + ' km from its edge · GPS ±' + Math.round(pos[2]) + ' m', '#dc2626');
+  }
+  if (!MID || !WDC) { box('Link is incomplete', 'Ask for the market link again'); return; }
+  if (location.protocol === 'file:') box('Open this from its https link', 'Location does not work in a downloaded file');
+  fetch('data/' + encodeURIComponent(WDC) + '.json', {cache: 'no-cache'}).then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); }).then(function (d) {
+    log('data loaded: WD ' + d.wd + ', built ' + d.built + ', ' + Object.keys(d.m).length + ' markets');
+    M = d.m[MID];
+    if (!M) { box('Market not found', 'Market ' + esc(MID) + ' is not in WD ' + esc(WDC)); return; }
+    document.title = M.n;
+    var pg = L.geoJSON(M.g, {interactive: false, style: {color: '#ffffff', weight: 4, fillColor: COL[M.c], fillOpacity: 0.3}}).addTo(map);
+    M.s.forEach(function (s) {
+      if (s[3]) L.geoJSON(s[3], {interactive: false, style: {color: '#f8fafc', weight: 1.5, fill: false, opacity: 0.9}}).addTo(map);
+      L.circleMarker([s[1], s[2]], {radius: 5, color: '#ffffff', weight: 1.5, fillColor: '#dc2626', fillOpacity: 1}).bindTooltip(esc(s[0]), {permanent: true, direction: 'top', className: 'lbl', offset: [0, -6]}).addTo(map);
+    });
+    PB = pg.getBounds(); map.fitBounds(PB, {padding: [40, 40]});
+    log('market ' + M.n + ' · ' + M.c + ' · ' + M.s.length + ' settlements');
+    update(); geo();
+  }).catch(function (e) { log('load error: ' + e.message); box('Could not load the market', 'Check internet and open the link again (' + esc(e.message) + ')'); });
+  function geo() {
+    if (!('geolocation' in navigator)) { box(esc(M.n), 'This browser cannot give location', COL[M.c]); return; }
+    navigator.geolocation.watchPosition(function (p) {
+      pos = [p.coords.latitude, p.coords.longitude, p.coords.accuracy]; Lme.clearLayers(); log('gps ' + pos[0].toFixed(5) + ',' + pos[1].toFixed(5) + ' ±' + Math.round(pos[2]));
+      L.circle([pos[0], pos[1]], {radius: pos[2], color: '#38bdf8', weight: 1, fillColor: '#38bdf8', fillOpacity: 0.12, interactive: false}).addTo(Lme);
+      L.circleMarker([pos[0], pos[1]], {radius: 9, color: '#ffffff', weight: 3, fillColor: '#0ea5e9', fillOpacity: 1, interactive: false}).addTo(Lme);
+      update();
+    }, function (e) { log('gps error ' + e.code + ' ' + e.message); box(esc(M.n), e.code === 1 ? 'Location is blocked — allow it for this site in browser settings' : 'Waiting for GPS…', COL[M.c]); },
+    {enableHighAccuracy: true, maximumAge: 5000, timeout: 30000});
+  }
+  $('me').addEventListener('click', function () { if (pos) map.setView([pos[0], pos[1]], Math.max(map.getZoom(), 16)); else box(M ? esc(M.n) : 'Market', 'No location yet — allow location and wait a few seconds', '#9ca3af'); });
+  $('mk').addEventListener('click', function () { if (PB) map.fitBounds(PB, {padding: [40, 40]}); });
+})();
+</script>
+</body></html>
